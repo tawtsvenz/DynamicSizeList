@@ -53,13 +53,15 @@ export default function SentenceList(props) {
         height={size ? size.height : 600}
         width={size ? size.width : 200}
         itemCount={paragraphs.length}
+        itemSize={() => 10} // dummy. Will not be used
         overscanCount={5}
-        scrollFromEnd
       >
         {(index, ref) => {
           return (
             <div ref={ref} style={textContainerStyle}>
-              <div style={textFieldStyle}>{paragraphs[index] + "..."}</div>
+              <div style={textFieldStyle}>
+                {`${index + 1}: ${paragraphs[index]}...`}
+              </div>
             </div>
           );
         }}

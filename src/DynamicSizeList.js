@@ -1,220 +1,252 @@
-import React, { createElement, useEffect, useRef } from "react";
+import React, { createElement } from "react";
 
-import { VariableSizeList as List } from "react-window";
+import { VariableSizeList } from "react-window";
 
-// override list method
+// override since not exposed in api
 const defaultItemKey = (index, data) => index;
+const shouldResetStyleCacheOnItemSizeChange = false;
 
-// override list method
-const getEstimatedTotalSize = (
-  { itemCount },
-  { itemMetadataMap, estimatedItemSize, lastMeasuredIndex }
+//paste override since not exposed in api
+const getItemMetadata = (
+  props,
+  index,
+  instanceProps
 ) => {
-  let totalSizeOfMeasuredItems = 0;
+  const { itemSize } = ((props));
+  const { itemMetadataMap, lastMeasuredIndex } = instanceProps;
 
-  // Edge case check for when the number of items decreases while a scroll is in progress.
-  // https://github.com/bvaughn/react-window/pull/138
-  if (lastMeasuredIndex >= itemCount) {
-    lastMeasuredIndex = itemCount - 1;
+  if (index > lastMeasuredIndex) {
+    let offset = 0;
+    if (lastMeasuredIndex >= 0) {
+      const itemMetadata = itemMetadataMap[lastMeasuredIndex];
+      offset = itemMetadata.offset + itemMetadata.size;
+    }
+
+    for (let i = lastMeasuredIndex + 1; i <= index; i++) {
+      let size = ((itemSize))(i);
+
+      itemMetadataMap[i] = {
+        offset,
+        size,
+      };
+
+      offset += size;
+    }
+
+    instanceProps.lastMeasuredIndex = index;
   }
 
-  if (lastMeasuredIndex >= 0) {
-    const itemMetadata = itemMetadataMap[lastMeasuredIndex];
-    totalSizeOfMeasuredItems = itemMetadata.offset + itemMetadata.size;
-  }
-
-  const numUnmeasuredItems = itemCount - lastMeasuredIndex - 1;
-  const totalSizeOfUnmeasuredItems = numUnmeasuredItems * estimatedItemSize;
-
-  return totalSizeOfMeasuredItems + totalSizeOfUnmeasuredItems;
+  return itemMetadataMap[index];
 };
 
-// override list method
-function render(fixOverlaps) {
-  const {
-    children,
-    className,
-    direction,
-    height,
-    innerRef,
-    innerElementType,
-    innerTagName,
-    itemCount,
-    itemData,
-    itemKey = defaultItemKey,
-    layout,
-    outerElementType,
-    outerTagName,
-    style,
-    useIsScrolling,
-    width
-  } = this.props;
-  const { isScrolling, scrollDirection, scrollOffset } = this.state;
+const getItemOffset = (
+  props,
+  index,
+  instanceProps
+) => getItemMetadata(props, index, instanceProps).offset;
 
-  // TODO Deprecate direction "horizontal"
-  const isHorizontal = direction === "horizontal" || layout === "horizontal";
+const binarySearch = (
+  props,
+  instanceProps,
+  high,
+  low,
+  offset
+) => {
+  while (low <= high) {
+    const middle = low + Math.floor((high - low) / 2);
+    const currentOffset = getItemMetadata(props, middle, instanceProps).offset;
 
-  const onScroll = isHorizontal
-    ? this._onScrollHorizontal
-    : this._onScrollVertical;
-
-  const [startIndex, stopIndex, visibleStartIndex, visibleStopIndex] = this._getRangeToRender();
-
-  const itemMetadataMap = this._instanceProps.itemMetadataMap;
-  if (itemMetadataMap[startIndex]) {
-    const fromEnd = scrollDirection.localeCompare("backward") === 0;
-    // from from visible to overscan depending on direction of scroll
-    const fixStartIndex = fromEnd ? startIndex : visibleStartIndex;
-    const fixStopIndex = fromEnd ? visibleStopIndex : stopIndex;
-    const anchorIndex = fromEnd ? fixStopIndex : fixStartIndex;
-    const oldOffset = itemMetadataMap[anchorIndex].offset;
-    const fixed = fixOverlaps(
-      itemCount,
-      itemMetadataMap,
-      fixStartIndex,
-      fixStopIndex,
-      fromEnd,
-    );
-    if (fixed) {
-      // forget styles
-      this._getItemStyleCache(-1);
-      // adjust position if changed to keep visible item in view
-      const newOffset = itemMetadataMap[anchorIndex].offset;
-      this.setState({
-        scrollDirection: scrollDirection,
-        scrollOffset: scrollOffset + (newOffset - oldOffset),
-        scrollUpdateWasRequested: true,
-      });
+    if (currentOffset === offset) {
+      return middle;
+    } else if (currentOffset < offset) {
+      low = middle + 1;
+    } else if (currentOffset > offset) {
+      high = middle - 1;
     }
   }
+  return null;
+/*
+  if (low > 0) {
+    return low - 1;
+  } else {
+    return 0;
+  }*/
+};
 
-  const items = [];
-  if (itemCount > 0) {
-    for (let index = startIndex; index <= stopIndex; index++) {
-      items.push(
-        createElement(children, {
-          data: itemData,
-          key: itemKey(index, itemData),
-          index,
-          isScrolling: useIsScrolling ? isScrolling : undefined,
-          style: this._getItemStyle(index)
-        })
-      );
-    }
-  }
-
-  // Read this value AFTER items have been created,
-  // So their actual sizes (if variable) are taken into consideration.
-  const estimatedTotalSize = getEstimatedTotalSize(
-    this.props,
-    this._instanceProps
-  );
-
-  return createElement(
-    outerElementType || outerTagName || "div",
-    {
-      className,
-      onScroll,
-      ref: this._outerRefSetter,
-      style: {
-        position: "relative",
-        height,
-        width,
-        overflow: "auto",
-        WebkitOverflowScrolling: "touch",
-        willChange: "transform",
-        direction,
-        ...style
-      }
-    },
-    createElement(innerElementType || innerTagName || "div", {
-      children: items,
-      ref: innerRef,
-      style: {
-        height: isHorizontal ? "100%" : estimatedTotalSize,
-        pointerEvents: isScrolling ? "none" : undefined,
-        width: isHorizontal ? estimatedTotalSize : "100%"
-      }
-    })
-  );
-}
-
-function IndexedListItem(props) {
+class IndexedListItem extends React.Component {
   //required props: index, style, onSetSize, childCreationCallback
-  const onSetSize = props.onSetSize;
-  const childRef = useRef(null);
-  const widthRef = useRef(0);
-  const heightRef = useRef(0);
-  useEffect(() => {
-    if (childRef.current) {
-      const node = childRef.current;
+  constructor(props) {
+    super(props);
+    this.width = 0;
+    this.height = 0;
+    this.childRef = React.createRef();
+    this.resizeObserver = null;
+  }
+
+  componentDidMount() {
+    if (this.childRef.current) {
+      const node = this.childRef.current;
+      const onSetSize = this.props.onSetSize;
       if (node) {
         if (onSetSize) {
-          onSetSize(props.index, node);
+          onSetSize(this.props.index, node);
         }
       }
       try {
-        const resizeObserver = new ResizeObserver(() => {
+        this.resizeObserver = new ResizeObserver(() => {
           if (
             onSetSize &&
             ((node.offsetHeight > 0 &&
-              node.offsetHeight !== heightRef.current) ||
-              (node.offsetWidth > 0 && node.offsetWidth !== widthRef.current))
+              node.offsetHeight !== this.height) ||
+              (node.offsetWidth > 0 && node.offsetWidth !== this.width))
           ) {
-            heightRef.current = node.offsetHeight;
-            widthRef.current = node.offsetWidth;
-            onSetSize(props.index, node);
+            this.height = node.offsetHeight;
+            this.width = node.offsetWidth;
+            onSetSize(this.props.index, node);
           }
         });
-        resizeObserver.observe(node);
-        return () => resizeObserver.unobserve(node);
+        this.resizeObserver.observe(node);
       } catch (e) {
-        console.log("ResizeObserver API not available");
+        //console.log("ResizeObserver API not available");
       }
     }
-    // eslint-disable-next-line
-  }, [childRef]);
+  }
+  componentWillUnmount() {
+    if (this.resizeObserver) {
+      this.resizeObserver.unobserve(this.childRef.current);
+    }
+  }
 
-  return (
-    <span style={{ ...props.style }}>
-      {props.childCreationCallback(props.index, childRef)}
+  render() {
+    return <span style={{ ...this.props.style }}>
+      {this.props.childCreationCallback(this.props.index, this.childRef)}
     </span>
-  );
+  }
 }
 
-export default function DynamicSizeList(props) {
+export default class DynamicSizeList extends VariableSizeList {
   // props: componentRef, scrollFromEnd, [other VariableSizeList props]
   // will override ref and itemSize props.
-  const listRef = useRef();
 
-  useEffect(() => {
-    if (listRef.current) {
-      // give parent the list ref
-      const node = listRef.current;
-      if (props.componentRef) props.componentRef.current = node;
-      // patch render method
-      const boundRender = render.bind(node);
-      Object.getPrototypeOf(node).render = () => boundRender(fixOverlaps);
-    }
-    // eslint-disable-next-line
-  }, [listRef]);
+  constructor(props) {
+    super(props);
+    this.firstScrollDone = false;
+    this.fixingInProgress = false;
+    this.measuredItemsCount = 0;
+    this.measuredItemsDict = {};
+    this.totalMeasuredSize = 0;
+    //increment it with setState to request an update. Especially usefull after children change sizes.
+    this.state.stateCounter = 0;
+       
+  }
 
-  // scroll to end on first items population if props say we should start from end
-  const firstScrollRef = useRef(false);
-  useEffect(() => {
+  requestUpdate() {
+    this.setState(prevState => ({ stateCounter: prevState.stateCounter + 1}));
+  }
+
+  componentDidMount() {
+    super.componentDidMount();
+    // give parent the list ref
+    if (this.props.componentRef) this.props.componentRef.current = this;
+  }
+
+  componentDidUpdate() {
+    super.componentDidUpdate();
+
+    const itemMetadataMap = this._instanceProps.itemMetadataMap;
+    const [startIndex, stopIndex, visibleStartIndex, visibleStopIndex] = this._getRangeToRender();
+    // scroll to end on first items population if props say we should start from end
     if (
-      !firstScrollRef.current &&
-      props.itemCount > 0 &&
-      listRef.current &&
-      props.scrollFromEnd
+      !this.firstScrollDone &&
+      this.props.itemCount > 0 &&
+      this.props.scrollFromEnd
     ) {
-      const node = listRef.current;
-      node.scrollToItem(props.itemCount - 2);
-      firstScrollRef.current = true;
+      if (this.props.scrollFromEnd) {
+        const lastItem = getItemMetadata(this.props, this.props.itemCount - 1, this._instanceProps);
+        const endOffset = lastItem.offset + lastItem.size;
+        if (this.props.itemCount - 1 > visibleStopIndex) {
+          //Not near enough yet
+          this.scrollTo(endOffset);
+        } else {
+          this.firstScrollDone = true;
+        }
+      } else {
+        this.firstScrollDone = true;
+      }
     }
-  }, [props.itemCount, props.scrollFromEnd, listRef]);
 
-  function pushAboveZero(itemMetadataMap, index, endIndex) {
+    // fix overlaps after update
+    const itemCount = this.props.itemCount;
+    const { scrollDirection } = this.state;
+    if (itemMetadataMap[startIndex]) {
+      const fromEnd = scrollDirection.localeCompare("backward") === 0;
+      // from from visible to overscan depending on direction of scroll
+      const fixStartIndex = fromEnd ? startIndex : visibleStartIndex;
+      const fixStopIndex = fromEnd ? visibleStopIndex : stopIndex;
+      const anchorIndex = fromEnd ? visibleStopIndex : visibleStartIndex;
+      const oldOffset = itemMetadataMap[anchorIndex].offset;
+      const fixed = this.fixOverlaps(
+        itemCount,
+        itemMetadataMap,
+        fixStartIndex,
+        fixStopIndex,
+        fromEnd,
+      );
+      if (fixed) {
+        // forget styles
+        this._getItemStyleCache(-1);
+        // adjust position if changed to keep visible item in view
+        const newOffset = itemMetadataMap[anchorIndex].offset;
+        const offsetChange = newOffset - oldOffset;
+        this.setState(prevState => ({
+          scrollDirection: scrollDirection,
+          // just to make sure we update even if newOffset=oldOffset since gaps might have been fixed
+          scrollOffset: prevState.scrollOffset + offsetChange + 0.1,
+          scrollUpdateWasRequested: false,
+        }));
+      }
+    }
+  }
+
+  getEstimatedTotalSize() {
+    const unmeasuredItemsCount = this.props.itemCount - this.measuredItemsCount;
+    const unmeasuredSize = unmeasuredItemsCount * this._instanceProps.estimatedItemSize;
+    const measuredSize = this.totalMeasuredSize;
+    return measuredSize + unmeasuredSize;
+  }
+
+  setSize(index, node) {
+    if (index < 0) return;
+    const { direction, layout } = this.props;
+    const isHorizontal = direction === "horizontal" || layout === "horizontal";
+    const newSize = isHorizontal ? node.offsetWidth : node.offsetHeight;
+
+    const itemMetadataMap = this._instanceProps.itemMetadataMap;
+    if (newSize > 0 && itemMetadataMap[index].size !== newSize) {
+      const currentItemData = itemMetadataMap[index];
+      const oldSize = itemMetadataMap[index].size;
+      itemMetadataMap[index] = {
+        offset: currentItemData.offset,
+        size: newSize
+      };
+      // update estimated total size
+      if (!this.measuredItemsDict[index]) {
+        this.measuredItemsDict[index] = index;
+        this.measuredItemsCount += 1;
+      }
+      this.totalMeasuredSize = this.totalMeasuredSize - oldSize + newSize;
+      this.requestUpdate();
+    }
+  }
+
+  getItemSize(index) {
+    const item = getItemMetadata(this.props, index, this._instanceProps);
+    const savedSize = item ? item.size : 0;
+    return savedSize ? savedSize : 50;
+  }
+
+  pushAboveZero(itemMetadataMap, index, endIndex) {
+    // when offset becomes negative push to zero since scrollTop doesnt understand negative values
     const pushValue = 0 - itemMetadataMap[index].offset;
     if (pushValue < 0) return;
     for (let i = index; i <= endIndex; i++) {
@@ -223,9 +255,18 @@ export default function DynamicSizeList(props) {
     }
   }
 
-  const fixingRef = useRef(false);
-  // eslint-disable-next-line no-unused-vars
-  function fixOverlaps(
+  pullBackToZero(itemMetadataMap, index, endIndex) {
+    // Sometimes we fixOverlaps() and first item is nolonger at 0. 
+    // This creates a gap as we scroll from end to start.
+    const pullValue = itemMetadataMap[index].offset;
+    if (pullValue < 0) return;
+    for (let i = index; i <= endIndex; i++) {
+      if (!itemMetadataMap[i]) break;
+      itemMetadataMap[i].offset -= pullValue;
+    }
+  }
+
+  fixOverlaps(
     itemCount,
     itemMetadataMap,
     fromIndex,
@@ -235,8 +276,8 @@ export default function DynamicSizeList(props) {
     let fixed = false;
 
     // skip fixing if already doing it
-    if (fixingRef.current) return fixed;
-    else fixingRef.current = true;
+    if (this.fixingInProgress) return fixed;
+    else this.fixingInProgress = true;
 
     if (!fromEnd) {
       for (let i = fromIndex; i < endIndex + 1; i++) {
@@ -277,53 +318,130 @@ export default function DynamicSizeList(props) {
         }
       }
       if (indexBelowZero >= 0) {
-        pushAboveZero(itemMetadataMap, indexBelowZero, endIndex + 1);
+        this.pushAboveZero(itemMetadataMap, indexBelowZero, endIndex + 1);
+      }
+      if (fromIndex === 0 && itemMetadataMap[fromIndex].offset > 0) {
+        // fix first item push above zero
+        this.pullBackToZero(itemMetadataMap, fromIndex, endIndex + 1);
       }
     }
-    fixingRef.current = false;
+    this.fixingInProgress = false;
     return fixed;
   }
 
-  function setSize(index, node) {
-    const list = listRef.current;
-    if (!list || index < 0) return;
-    const { direction, layout } = list.props;
-    const isHorizontal = direction === "horizontal" || layout === "horizontal";
-    const newDimension = isHorizontal ? node.offsetWidth : node.offsetHeight;
+  // override so we can attach our custom getItemSize function
+  _getItemStyle = (index) => {
+    const { direction, itemSize, layout } = this.props;
 
-    const itemMetadataMap = list._instanceProps.itemMetadataMap;
-    if (newDimension > 0 && itemMetadataMap[index].size !== newDimension) {
-      const currentItemData = itemMetadataMap[index];
-      itemMetadataMap[index] = {
-        offset: currentItemData.offset,
-        size: newDimension
+    const itemStyleCache = this._getItemStyleCache(
+      shouldResetStyleCacheOnItemSizeChange && itemSize,
+      shouldResetStyleCacheOnItemSizeChange && layout,
+      shouldResetStyleCacheOnItemSizeChange && direction
+    );
+
+    let style;
+    if (itemStyleCache.hasOwnProperty(index)) {
+      style = itemStyleCache[index];
+    } else {
+      const offset = getItemOffset(this.props, index, this._instanceProps);
+      const size = this.getItemSize(this.props, index, this._instanceProps);
+
+      // TODO Deprecate direction "horizontal"
+      const isHorizontal =
+        direction === 'horizontal' || layout === 'horizontal';
+
+      const isRtl = direction === 'rtl';
+      const offsetHorizontal = isHorizontal ? offset : 0;
+      itemStyleCache[index] = style = {
+        position: 'absolute',
+        left: isRtl ? undefined : offsetHorizontal,
+        right: isRtl ? offsetHorizontal : undefined,
+        top: !isHorizontal ? offset : 0,
+        height: !isHorizontal ? size : '100%',
+        width: isHorizontal ? size : '100%',
       };
     }
-  }
 
-  function getItemSize(index) {
-    let item = null;
-    if (listRef.current) {
-      const list = listRef.current;
-      const itemMetadataMap = list._instanceProps.itemMetadataMap;
-      item = itemMetadataMap[index];
-    }
-    const savedSize = item ? item.size : 0;
-    return savedSize ? savedSize : 50;
-  }
+    return style;
+  };
 
-  return (
-    <List {...props} ref={listRef} itemSize={getItemSize}>
-      {({ index, style }) => {
-        return (
-          <IndexedListItem
-            index={index}
-            style={style}
-            onSetSize={setSize}
-            childCreationCallback={props.children}
-          />
+  render() {
+    const {
+      children,
+      className,
+      direction,
+      height,
+      innerRef,
+      innerElementType,
+      innerTagName,
+      itemCount,
+      itemData,
+      itemKey = defaultItemKey,
+      layout,
+      outerElementType,
+      outerTagName,
+      style,
+      useIsScrolling,
+      width
+    } = this.props;
+    const { isScrolling } = this.state;
+
+    // TODO Deprecate direction "horizontal"
+    const isHorizontal = direction === "horizontal" || layout === "horizontal";
+
+    const onScroll = isHorizontal
+      ? this._onScrollHorizontal
+      : this._onScrollVertical;
+
+    const [startIndex, stopIndex] = this._getRangeToRender();
+    const items = [];
+    if (itemCount > 0) {
+      const boundSetSize = this.setSize.bind(this);
+      for (let index = startIndex; index <= stopIndex; index++) {
+        items.push(
+          createElement(IndexedListItem, {
+            data: itemData,
+            key: itemKey(index, itemData),
+            index,
+            isScrolling: useIsScrolling ? isScrolling : undefined,
+            style: this._getItemStyle(index),
+            onSetSize: boundSetSize,
+            childCreationCallback: children,
+          })
         );
-      }}
-    </List>
-  );
+      }
+    }
+
+    // Read this value AFTER items have been created,
+    // So their actual sizes (if variable) are taken into consideration.
+    const estimatedTotalSize = this.getEstimatedTotalSize();
+
+    return createElement(
+      outerElementType || outerTagName || "div",
+      {
+        className,
+        onScroll,
+        ref: this._outerRefSetter,
+        style: {
+          position: "relative",
+          height,
+          width,
+          overflow: "auto",
+          WebkitOverflowScrolling: "touch",
+          willChange: "transform",
+          direction,
+          ...style
+        }
+      },
+      createElement(innerElementType || innerTagName || "div", {
+        children: items,
+        ref: innerRef,
+        style: {
+          height: isHorizontal ? "100%" : estimatedTotalSize,
+          pointerEvents: isScrolling ? "none" : undefined,
+          width: isHorizontal ? estimatedTotalSize : "100%"
+        }
+      })
+    );
+  }
 }
