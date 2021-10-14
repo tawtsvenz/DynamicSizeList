@@ -45,33 +45,28 @@ const getItemOffset = (
   instanceProps
 ) => getItemMetadata(props, index, instanceProps).offset;
 
-const binarySearch = (
+const getStopIndexForStartIndex = (
   props,
-  instanceProps,
-  high,
-  low,
-  offset
+  startIndex,
+  scrollOffset,
+  instanceProps
 ) => {
-  while (low <= high) {
-    const middle = low + Math.floor((high - low) / 2);
-    const currentOffset = getItemMetadata(props, middle, instanceProps).offset;
+  const { direction, height, itemCount, layout, width } = props;
 
-    if (currentOffset === offset) {
-      return middle;
-    } else if (currentOffset < offset) {
-      low = middle + 1;
-    } else if (currentOffset > offset) {
-      high = middle - 1;
-    }
+  // TODO Deprecate direction "horizontal"
+  const isHorizontal = direction === 'horizontal' || layout === 'horizontal';
+  const size = (((isHorizontal ? width : height)));
+  const itemMetadata = getItemMetadata(props, startIndex, instanceProps);
+  const maxOffset = scrollOffset + size;
+
+  let offset = itemMetadata.offset + itemMetadata.size;
+  let stopIndex = startIndex;
+  while (stopIndex < itemCount - 1 && offset < maxOffset) {
+    stopIndex++;
+    offset += getItemMetadata(props, stopIndex, instanceProps).size;
   }
-  return null;
-/*
-  if (low > 0) {
-    return low - 1;
-  } else {
-    return 0;
-  }*/
-};
+  return stopIndex;
+}
 
 class IndexedListItem extends React.Component {
   //required props: index, style, onSetSize, childCreationCallback
@@ -118,9 +113,8 @@ class IndexedListItem extends React.Component {
   }
 
   render() {
-    return <span style={{ ...this.props.style }}>
-      {this.props.childCreationCallback(this.props.index, this.childRef)}
-    </span>
+    return createElement('span', { style: this.props.style },
+      this.props.childCreationCallback(this.props.index, this.childRef));
   }
 }
 
@@ -132,16 +126,91 @@ export default class DynamicSizeList extends VariableSizeList {
     super(props);
     this.firstScrollDone = false;
     this.fixingInProgress = false;
+    //to prevent too many updates at same time, a timer will reset it
+    this.updatingState = false;
     this.measuredItemsCount = 0;
-    this.measuredItemsDict = {};
     this.totalMeasuredSize = 0;
+    this.lastRangeRendered = null;
     //increment it with setState to request an update. Especially usefull after children change sizes.
     this.state.stateCounter = 0;
-       
+
   }
 
   requestUpdate() {
-    this.setState(prevState => ({ stateCounter: prevState.stateCounter + 1}));
+    const { isScrolling } = this.state;
+    if (!isScrolling) {
+      this.setState(prevState => ({ stateCounter: prevState.stateCounter + 1 }));
+    }
+  }
+
+  _createFirstRangeToRender() {
+    const { itemCount, overscanCount, height, width, direction, layout } = this.props;
+    const { scrollOffset } = this.state;
+    const isHorizontal = direction === "horizontal" || layout === "horizontal";
+    let estimatedIndex = Math.floor(scrollOffset * itemCount / this.getEstimatedTotalSize());
+    estimatedIndex = estimatedIndex < 0 ? 0 : estimatedIndex;
+    if (!this.lastRangeRendered) {
+      // create a new range at the begining
+      const startIndex = estimatedIndex;
+      const windowSize = isHorizontal ? width : height;
+      const startOffset = getItemOffset(this.props, startIndex, this._instanceProps);
+      const maxOffset = startOffset + windowSize;
+      let offset = startOffset;
+      let stopIndex = startIndex;
+      while (stopIndex < itemCount && offset < maxOffset) {
+        stopIndex++;
+        offset += this.getItemSize(stopIndex);
+      }
+
+      const overscanStart = startIndex - overscanCount > 0 ? startIndex - overscanCount : 0;
+      const overscanStop = stopIndex + overscanCount < itemCount ? stopIndex + overscanCount : itemCount - 1;
+      this.lastRangeRendered = [overscanStart, overscanStop, startIndex, stopIndex];
+    }
+    return this.lastRangeRendered;
+  }
+
+  _getRangeToRender() {
+    const { itemCount, overscanCount } = this.props;
+    const { isScrolling, scrollDirection, scrollOffset } = this.state;
+    let estimatedIndex = Math.floor(scrollOffset * (itemCount - 1) / this.getEstimatedTotalSize());
+    estimatedIndex = estimatedIndex < 0 ? 0 : estimatedIndex;
+    if (!this.lastRangeRendered) {
+      // create a new range at the begining
+      this._createFirstRangeToRender();
+    }
+    const [overscanStartIndex, overScanStopIndex] = this.lastRangeRendered;
+
+    let nearestIndexInOverscan = overscanStartIndex;
+    const firstOffset = getItemOffset(this.props, overscanStartIndex, this._instanceProps);
+    let leastDistance = Math.abs(firstOffset - scrollOffset);
+    for (let i = overscanStartIndex + 1; i <= overScanStopIndex; i++) {
+      const nextItemOffset = getItemOffset(this.props, i, this._instanceProps);
+      const difference = Math.abs(nextItemOffset - scrollOffset);
+      if (difference < leastDistance) {
+        nearestIndexInOverscan = i;
+        leastDistance = difference;
+      }
+    }
+    let useEstimate = scrollDirection === 'forward' ? estimatedIndex < nearestIndexInOverscan:
+      estimatedIndex > nearestIndexInOverscan;
+    let startIndex = useEstimate ? estimatedIndex : nearestIndexInOverscan;
+    if (scrollDirection === 'backward') {
+      useEstimate = estimatedIndex < nearestIndexInOverscan;
+      startIndex = useEstimate ? estimatedIndex : nearestIndexInOverscan;
+    }
+    const stopIndex = getStopIndexForStartIndex(this.props, startIndex, scrollOffset, this._instanceProps);
+    // Overscan by one item in each direction so that tab/focus works.
+    // If there isn't at least one extra item, tab loops back around.
+    const overscanStart = startIndex - overscanCount > 0 ? startIndex - overscanCount : 0;
+    const overscanStop = stopIndex + overscanCount < itemCount ? stopIndex + overscanCount : itemCount - 1;
+
+    this.lastRangeRendered = [
+      overscanStart,
+      overscanStop,
+      startIndex,
+      stopIndex,
+    ];
+    return this.lastRangeRendered;
   }
 
   componentDidMount() {
@@ -154,20 +223,29 @@ export default class DynamicSizeList extends VariableSizeList {
     super.componentDidUpdate();
 
     const itemMetadataMap = this._instanceProps.itemMetadataMap;
+    const { scrollDirection, scrollOffset, isScrolling } = this.state;
+    const { itemCount, scrollFromEnd, width, height, direction, layout } = this.props;
+    const isHorizontal = direction === "horizontal" || layout === "horizontal";
+    const windowSize = isHorizontal ? width : height;
     const [startIndex, stopIndex, visibleStartIndex, visibleStopIndex] = this._getRangeToRender();
+    const visibleStartOffset = getItemOffset(this.props, visibleStartIndex, this._instanceProps);
+    const visibleStopOffset = getItemOffset(this.props, visibleStopIndex, this._instanceProps);
     // scroll to end on first items population if props say we should start from end
     if (
       !this.firstScrollDone &&
-      this.props.itemCount > 0 &&
-      this.props.scrollFromEnd
+      itemCount > 0 &&
+      scrollFromEnd
     ) {
-      if (this.props.scrollFromEnd) {
-        const lastItem = getItemMetadata(this.props, this.props.itemCount - 1, this._instanceProps);
-        const endOffset = lastItem.offset + lastItem.size;
-        if (this.props.itemCount - 1 > visibleStopIndex) {
+      if (scrollFromEnd) {
+        const lastItem = getItemMetadata(this.props, itemCount - 1, this._instanceProps);
+        const lastItemEndOffset = this.getEstimatedTotalSize() - lastItem.size;
+        if (visibleStopOffset < lastItemEndOffset) {
           //Not near enough yet
-          this.scrollTo(endOffset);
+          if (!isScrolling) {
+            this.scrollTo(lastItemEndOffset + lastItem.size);
+          }
         } else {
+          if (this._outerRef) this._outerRef.scrollTop = visibleStopOffset;
           this.firstScrollDone = true;
         }
       } else {
@@ -175,14 +253,20 @@ export default class DynamicSizeList extends VariableSizeList {
       }
     }
 
-    // fix overlaps after update
-    const itemCount = this.props.itemCount;
-    const { scrollDirection } = this.state;
-    if (itemMetadataMap[startIndex]) {
-      const fromEnd = scrollDirection.localeCompare("backward") === 0;
+    // fix overlaps after update when nolonger scrolling
+    if (itemMetadataMap[startIndex] && !isScrolling && !this.updating) {
+      const fromEnd = scrollDirection === "backward";
       // from from visible to overscan depending on direction of scroll
       const fixStartIndex = fromEnd ? startIndex : visibleStartIndex;
       const fixStopIndex = fromEnd ? visibleStopIndex : stopIndex;
+      // fix when items are left behind and nolonger onscreen
+      const fixStartOffset = getItemOffset(this.props, fixStartIndex, this._instanceProps);
+      const fixStopOffset = getItemOffset(this.props, fixStopIndex, this._instanceProps);
+      if (fromEnd && fixStopIndex > scrollOffset) {
+        itemMetadataMap[fixStopIndex].offset = scrollOffset + windowSize - itemMetadataMap[fixStopIndex].size;
+      } else if (!fromEnd && fixStartOffset < scrollOffset) {
+        itemMetadataMap[fixStartIndex].offset = scrollOffset;
+      }
       const anchorIndex = fromEnd ? visibleStopIndex : visibleStartIndex;
       const oldOffset = itemMetadataMap[anchorIndex].offset;
       const fixed = this.fixOverlaps(
@@ -201,9 +285,9 @@ export default class DynamicSizeList extends VariableSizeList {
         this.setState(prevState => ({
           scrollDirection: scrollDirection,
           // just to make sure we update even if newOffset=oldOffset since gaps might have been fixed
-          scrollOffset: prevState.scrollOffset + offsetChange + 0.1,
+          scrollOffset: prevState.scrollOffset + offsetChange,
           scrollUpdateWasRequested: false,
-        }));
+        }))
       }
     }
   }
@@ -230,11 +314,16 @@ export default class DynamicSizeList extends VariableSizeList {
         size: newSize
       };
       // update estimated total size
-      if (!this.measuredItemsDict[index]) {
-        this.measuredItemsDict[index] = index;
+      if (itemMetadataMap[index] && !itemMetadataMap[index].measured) {
+        itemMetadataMap[index].measured = true;
         this.measuredItemsCount += 1;
       }
       this.totalMeasuredSize = this.totalMeasuredSize - oldSize + newSize;
+      // update estimated item size to average of measured elements
+      const newItemSizeEstimate = Math.ceil(this.totalMeasuredSize / this.measuredItemsCount);
+      if (newItemSizeEstimate > 1) {
+        this._instanceProps.estimatedItemSize = newItemSizeEstimate;
+      }
       this.requestUpdate();
     }
   }
