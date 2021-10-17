@@ -5,11 +5,10 @@ import DynamicSizeList from "./DynamicSizeList";
 const randomParagraph = require("random-paragraph");
 
 const textContainerStyle = {
-  backgroundColor: "grey"
+  backgroundColor: "grey",
 };
 
 const textFieldStyle = {
-  margin: "2px",
   padding: "5px",
   color: "white",
   overflow: "auto",
@@ -37,7 +36,7 @@ export default function SentenceList(props) {
     }
   }, [parentRef]);
 
-  const [paragraphs] = useState(createParagraphs(1000));
+  const [paragraphs] = useState(createParagraphs(10000));
 
   return (
     <div
@@ -60,7 +59,7 @@ export default function SentenceList(props) {
           return (
             <div ref={ref} style={textContainerStyle}>
               <div style={textFieldStyle}>
-                {`${index + 1}: ${paragraphs[index]}...`}
+                {`${index}: ${paragraphs[index]}...`}
               </div>
             </div>
           );
