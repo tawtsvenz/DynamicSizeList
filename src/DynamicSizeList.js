@@ -49,7 +49,6 @@ const getItemOffset = (
 const getStopIndexForStartIndex = (
   props,
   startIndex,
-  scrollOffset,
   instanceProps
 ) => {
   const { direction, height, itemCount, layout, width } = props;
@@ -58,7 +57,7 @@ const getStopIndexForStartIndex = (
   const isHorizontal = direction === 'horizontal' || layout === 'horizontal';
   const size = (((isHorizontal ? width : height)));
   const itemMetadata = getItemMetadata(props, startIndex, instanceProps);
-  const maxOffset = scrollOffset + size;
+  const maxOffset = itemMetadata.offset + size;
 
   let offset = itemMetadata.offset + itemMetadata.size;
   let stopIndex = startIndex;
@@ -196,7 +195,7 @@ export default class DynamicSizeList extends VariableSizeList {
     }
     let useEstimate = estimatedIndex < nearestIndexInOverscan;
     let startIndex = useEstimate ? estimatedIndex : nearestIndexInOverscan;
-    const stopIndex = getStopIndexForStartIndex(this.props, startIndex, scrollOffset, this._instanceProps);
+    const stopIndex = getStopIndexForStartIndex(this.props, startIndex, this._instanceProps);
     // Overscan by one item in each direction so that tab/focus works.
     // If there isn't at least one extra item, tab loops back around.
     const overscanStart = startIndex - overscanCount > 0 ? startIndex - overscanCount : 0;

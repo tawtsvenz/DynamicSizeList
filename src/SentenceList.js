@@ -43,7 +43,7 @@ export default function SentenceList(props) {
       ref={parentRef}
       style={{
         height: "90vh",
-        width: "400px",
+        width: "90%",
         marginTop: '20px',
         marginBottom: '40px',
       }}
