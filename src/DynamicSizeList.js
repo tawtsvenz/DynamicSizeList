@@ -129,6 +129,8 @@ export default class DynamicSizeList extends VariableSizeList {
     this.fixingInProgress = false;
     this.measuredItemsCount = 0;
     this.totalMeasuredSize = 0;
+    // size of scroll element. Set it as we scroll
+    this.scrollSize = 0;
     this.lastRangeRendered = null;
     //increment it with setState to request an update. Especially usefull after children change sizes.
     this.state.stateCounter = 0;
@@ -170,7 +172,9 @@ export default class DynamicSizeList extends VariableSizeList {
 
   _getRangeToRender(scrollOffset) {
     const { itemCount, overscanCount } = this.props;
-    let estimatedIndex = Math.floor(scrollOffset * (itemCount - 1) / this.getEstimatedTotalSize());
+    const { isScrolling } = this.state;
+    const scrollSize = this.scrollSize > 0 ? this.scrollSize: this.getEstimatedTotalSize();
+    let estimatedIndex = Math.floor(scrollOffset * (itemCount - 1) / scrollSize);
     estimatedIndex = estimatedIndex < 0 ? 0 : estimatedIndex;
     estimatedIndex = estimatedIndex >= itemCount ? itemCount - 1 : estimatedIndex;
     if (!this.lastRangeRendered) {
@@ -178,7 +182,6 @@ export default class DynamicSizeList extends VariableSizeList {
       this._createFirstRangeToRender();
     }
     const [overscanStartIndex, overScanStopIndex] = this.lastRangeRendered;
-
     let nearestIndexInOverscan = overscanStartIndex;
     const firstOffset = getItemOffset(this.props, overscanStartIndex, this._instanceProps);
     let leastDistance = Math.abs(firstOffset - scrollOffset);
@@ -251,7 +254,8 @@ export default class DynamicSizeList extends VariableSizeList {
     const unmeasuredItemsCount = this.props.itemCount - this.measuredItemsCount;
     const unmeasuredSize = unmeasuredItemsCount * this._instanceProps.estimatedItemSize;
     const measuredSize = this.totalMeasuredSize;
-    return measuredSize + unmeasuredSize;
+    const estimatedSize = measuredSize + unmeasuredSize;
+    return estimatedSize;
   }
 
   setSize(index, node) {
@@ -479,7 +483,8 @@ export default class DynamicSizeList extends VariableSizeList {
 
   _onScrollHorizontal = (event) => {
     const { clientWidth, scrollLeft, scrollWidth } = event.currentTarget;
-    const { itemCount } = this.props;
+    this.scrollSize = scrollWidth;
+    const { width } = this.props;
     this.setState((prevState, prevProps) => {
       if (prevState.scrollOffset === scrollLeft) {
         // Scroll position may have been updated by cDM/cDU,
@@ -512,13 +517,11 @@ export default class DynamicSizeList extends VariableSizeList {
         Math.min(scrollOffset, scrollWidth - clientWidth)
       );
 
-      const { fixStopIndex, offsetChange, fixed } = this._applyFixes(scrollOffset, prevState, prevProps, this._instanceProps);
-      if (this._outerRef && fixStopIndex === itemCount - 1) {
-        const lastItem = getItemMetadata(this.props, fixStopIndex, this._instanceProps);
-        const endOffset = lastItem.offset + lastItem.size;
-        if (endOffset < this._outerRef.scrollTop) {
-          // TODO. Set according to tricky rtl settings.
-          this._outerRef.scrollLeft = endOffset;
+      const { newAnchorOffset, offsetChange, fixed } = this._applyFixes(scrollOffset, prevState, prevProps, this._instanceProps);
+      if (this._outerRef) {
+        if (
+        (newAnchorOffset > this._outerRef.scrollLeft + width)) {
+          this._outerRef.scrollLeft = newAnchorOffset;
         }
       }
 
@@ -535,7 +538,8 @@ export default class DynamicSizeList extends VariableSizeList {
 
   _onScrollVertical = (event) => {
     const { clientHeight, scrollHeight, scrollTop } = event.currentTarget;
-    const { itemCount } = this.props;
+    this.scrollSize = scrollHeight;
+    const { height } = this.props;
     this.setState((prevState, prevProps) => {
       if (prevState.scrollOffset === scrollTop) {
         // Scroll position may have been updated by cDM/cDU,
@@ -550,12 +554,11 @@ export default class DynamicSizeList extends VariableSizeList {
         Math.min(scrollTop, scrollHeight - clientHeight)
       );
 
-      const { fixStopIndex, offsetChange, fixed } = this._applyFixes(scrollOffset, prevState, prevProps, this._instanceProps);
-      if (this._outerRef && fixStopIndex === itemCount - 1) {
-        const lastItem = getItemMetadata(this.props, fixStopIndex, this._instanceProps);
-        const endOffset = lastItem.offset + lastItem.size;
-        if (endOffset < this._outerRef.scrollTop) {
-          this._outerRef.scrollTop = endOffset;
+      const { newAnchorOffset, offsetChange, fixed } = this._applyFixes(scrollOffset, prevState, prevProps, this._instanceProps);
+      if (this._outerRef) {
+        if (
+        (newAnchorOffset > this._outerRef.scrollTop + height)) {
+          this._outerRef.scrollTop = newAnchorOffset;
         }
       }
 
@@ -565,7 +568,7 @@ export default class DynamicSizeList extends VariableSizeList {
           prevState.scrollOffset < scrollOffset ? 'forward' : 'backward',
         // Force update if fixed but no offset change
         scrollOffset: scrollOffset + offsetChange + (fixed ? 0.1 : 0),
-        scrollUpdateWasRequested: true,
+        scrollUpdateWasRequested: false,
       };
     }, this._resetIsScrollingDebounced);
   }
