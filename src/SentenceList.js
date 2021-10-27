@@ -19,7 +19,7 @@ const textFieldStyle = {
 function createParagraphs(count) {
   const paragraphs = [];
   for (let i = 0; i < count; i++) {
-    paragraphs.push(randomParagraph({ min: 2, max: 5 }));
+    paragraphs.push(randomParagraph({ min: 2, max: 8 }));
   }
   return paragraphs;
 }
