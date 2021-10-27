@@ -13,28 +13,18 @@ const getItemMetadata = (
   index,
   instanceProps
 ) => {
-  const { itemSize } = ((props));
-  const { itemMetadataMap, lastMeasuredIndex } = instanceProps;
+  const { itemMetadataMap, estimatedItemSize } = instanceProps;
 
-  if (index > lastMeasuredIndex) {
-    let offset = 0;
-    if (lastMeasuredIndex >= 0) {
-      const itemMetadata = itemMetadataMap[lastMeasuredIndex];
-      offset = itemMetadata.offset + itemMetadata.size;
+  if (!itemMetadataMap[index]) {
+    const prevItem = itemMetadataMap[index - 1];
+    const nextItem = itemMetadataMap[index + 1];
+    const offset = prevItem ? prevItem.offset + prevItem.size :
+      (nextItem ? nextItem.offset - estimatedItemSize : 0);
+    itemMetadataMap[index] = {
+      offset: offset,
+      size: estimatedItemSize,
+      measured: false
     }
-
-    for (let i = lastMeasuredIndex + 1; i <= index; i++) {
-      let size = ((itemSize))(i);
-
-      itemMetadataMap[i] = {
-        offset,
-        size,
-      };
-
-      offset += size;
-    }
-
-    instanceProps.lastMeasuredIndex = index;
   }
 
   return itemMetadataMap[index];
@@ -45,6 +35,18 @@ const getItemOffset = (
   index,
   instanceProps
 ) => getItemMetadata(props, index, instanceProps).offset;
+
+const getItemSize = (
+  props,
+  index,
+  instanceProps
+) => {
+  const { estimatedItemSize } = instanceProps;
+  const item = getItemMetadata(props, index, instanceProps);
+  const savedSize = item ? item.size : -1;
+  return savedSize >= 0 ? savedSize : estimatedItemSize;
+
+}
 
 const getStopIndexForStartIndex = (
   props,
@@ -125,11 +127,10 @@ export default class DynamicSizeList extends VariableSizeList {
   constructor(props) {
     super(props);
     this.firstScrollDone = false;
-    this.fixingInProgress = false;
+    this.leastItemOffset = 0;
+    this._instanceProps.estimatedItemSize = 50;
     this.measuredItemsCount = 0;
     this.totalMeasuredSize = 0;
-    // size of scroll element. Set it as we scroll
-    this.scrollSize = 0;
     this.lastRangeRendered = null;
     //increment it with setState to request an update. Especially usefull after children change sizes.
     this.state.stateCounter = 0;
@@ -137,10 +138,17 @@ export default class DynamicSizeList extends VariableSizeList {
   }
 
   requestUpdate() {
-    const { isScrolling } = this.state;
-    if (!isScrolling) {
-      this.setState(prevState => ({ stateCounter: prevState.stateCounter + 1 }));
+    this.setState(prevState => ({ stateCounter: prevState.stateCounter + 1 }));
+  }
+
+  _withinOverscanRange(scrollOffset, startIndex, endIndex, props, instanceProps) {
+    if (endIndex <= startIndex) return false;
+    let startOffset = getItemOffset(props, startIndex, instanceProps);
+    let endOffset = startOffset;
+    for (let i = startIndex; i < endIndex + 1 && i < props.itemCount; i++) {
+      endOffset += getItemSize(props, i, instanceProps);
     }
+    return scrollOffset > startOffset && scrollOffset < endOffset;
   }
 
   _createFirstRangeToRender() {
@@ -159,20 +167,23 @@ export default class DynamicSizeList extends VariableSizeList {
       let stopIndex = startIndex;
       while (stopIndex < itemCount && offset < maxOffset) {
         stopIndex++;
-        offset += this.getItemSize(stopIndex);
+        offset += getItemSize(this.props, stopIndex, this._instanceProps);
       }
 
-      const overscanStart = startIndex - overscanCount > 0 ? startIndex - overscanCount : 0;
-      const overscanStop = stopIndex + overscanCount < itemCount ? stopIndex + overscanCount : itemCount - 1;
+      // overscan by at least one
+      const adjustedOverscanCount = overscanCount > 0 ? overscanCount : 1;
+      const overscanStart = startIndex - adjustedOverscanCount > 0 ? startIndex - adjustedOverscanCount : 0;
+      const overscanStop = stopIndex + adjustedOverscanCount < itemCount ? stopIndex + adjustedOverscanCount : itemCount - 1;
       this.lastRangeRendered = [overscanStart, overscanStop, startIndex, stopIndex];
     }
     return this.lastRangeRendered;
   }
 
-  _getRangeToRender(scrollOffset) {
+  _getRangeToRender(unadjustedScrollOffset) {
+    // adjust offset
+    const scrollOffset = unadjustedScrollOffset - Math.abs(this.leastItemOffset);
     const { itemCount, overscanCount } = this.props;
-    const { isScrolling } = this.state;
-    const scrollSize = this.scrollSize > 0 ? this.scrollSize: this.getEstimatedTotalSize();
+    const scrollSize = this.getEstimatedTotalSize();
     let estimatedIndex = Math.floor(scrollOffset * (itemCount - 1) / scrollSize);
     estimatedIndex = estimatedIndex < 0 ? 0 : estimatedIndex;
     estimatedIndex = estimatedIndex >= itemCount ? itemCount - 1 : estimatedIndex;
@@ -182,30 +193,42 @@ export default class DynamicSizeList extends VariableSizeList {
     }
     const [overscanStartIndex, overScanStopIndex] = this.lastRangeRendered;
     let nearestIndexInOverscan = overscanStartIndex;
-    const firstOffset = getItemOffset(this.props, overscanStartIndex, this._instanceProps);
-    let leastDistance = Math.abs(firstOffset - scrollOffset);
-    let nextItemOffset = firstOffset;
-    for (let i = overscanStartIndex + 1; i <= overScanStopIndex; i++) {
-      nextItemOffset += getItemMetadata(this.props, i, this._instanceProps).size;
-      const difference = Math.abs(nextItemOffset - scrollOffset);
-      if (difference < leastDistance) {
-        nearestIndexInOverscan = i;
-        leastDistance = difference;
+    const useEstimate = !this._withinOverscanRange(scrollOffset, overscanStartIndex, overScanStopIndex, this.props, this._instanceProps);
+    if (!useEstimate) {
+      const firstOffset = getItemOffset(this.props, overscanStartIndex, this._instanceProps);
+      let leastDistance = Math.abs(firstOffset - scrollOffset);
+      let nextItemOffset = firstOffset;
+      for (let i = overscanStartIndex + 1; i <= overScanStopIndex; i++) {
+        nextItemOffset += getItemMetadata(this.props, i, this._instanceProps).size;
+        const difference = Math.abs(nextItemOffset - scrollOffset);
+        if (difference < leastDistance) {
+          nearestIndexInOverscan = i;
+          leastDistance = difference;
+        }
       }
     }
-    let useEstimate = estimatedIndex < nearestIndexInOverscan;
     let startIndex = useEstimate ? estimatedIndex : nearestIndexInOverscan;
     const stopIndex = getStopIndexForStartIndex(this.props, startIndex, this._instanceProps);
     // Overscan by one item in each direction so that tab/focus works.
     // If there isn't at least one extra item, tab loops back around.
-    const overscanStart = startIndex - overscanCount > 0 ? startIndex - overscanCount : 0;
-    const overscanStop = stopIndex + overscanCount < itemCount ? stopIndex + overscanCount : itemCount - 1;
-
+    const adjustedOverscanCount = overscanCount > 0 ? overscanCount : 1;
+    const overscanStart = startIndex - adjustedOverscanCount > 0 ? startIndex - adjustedOverscanCount : 0;
+    const overscanStop = stopIndex + adjustedOverscanCount < itemCount ? stopIndex + adjustedOverscanCount : itemCount - 1;
+    // bring estimate to visible range
+    if (useEstimate) {
+      // anchor at startIndex after estimation
+      getItemMetadata(this.props, startIndex, this._instanceProps).offset = scrollOffset;
+      // push back items before startIndex
+      this.fixOverlaps(itemCount, overscanStart, startIndex, true);
+      // push forward items after startIndex
+      this.fixOverlaps(itemCount, startIndex, overscanStop, false);
+    }
     this.lastRangeRendered = [
       overscanStart,
       overscanStop,
       startIndex,
       stopIndex,
+      useEstimate
     ];
     return this.lastRangeRendered;
   }
@@ -221,29 +244,17 @@ export default class DynamicSizeList extends VariableSizeList {
   componentDidUpdate() {
     super.componentDidUpdate();
 
-    const { isScrolling, scrollOffset } = this.state;
+    const { isScrolling } = this.state;
     const { itemCount, scrollFromEnd } = this.props;
-    const [_, __, ___, visibleStopIndex] = this._getRangeToRender(scrollOffset);
-    const visibleStopOffset = getItemOffset(this.props, visibleStopIndex, this._instanceProps);
     // scroll to end on first items population if props say we should start from end
     if (
       !this.firstScrollDone &&
       itemCount > 0 &&
+      this.measuredItemsCount > 0 &&
       scrollFromEnd
     ) {
-      if (scrollFromEnd) {
-        const lastItem = getItemMetadata(this.props, itemCount - 1, this._instanceProps);
-        const lastItemEndOffset = this.getEstimatedTotalSize() - lastItem.size;
-        if (visibleStopOffset < lastItemEndOffset) {
-          //Not near enough yet
-          if (!isScrolling) {
-            this.scrollToItem(itemCount - 1, 'end');
-          }
-        } else {
-          if (this._outerRef) this._outerRef.scrollTop = visibleStopOffset;
-          this.firstScrollDone = true;
-        }
-      } else {
+      if (!isScrolling) {
+        this.scrollTo(this.getEstimatedTotalSize());
         this.firstScrollDone = true;
       }
     }
@@ -258,48 +269,39 @@ export default class DynamicSizeList extends VariableSizeList {
   }
 
   setSize(index, node) {
-    if (index < 0) return;
-    const { direction, layout } = this.props;
+    const { direction, layout, itemCount } = this.props;
+    if (index < 0 || index >= itemCount) return;
+    const fromEnd = this.state.scrollDirection === 'backward';
     const isHorizontal = direction === "horizontal" || layout === "horizontal";
     const newSize = isHorizontal ? node.offsetWidth : node.offsetHeight;
 
-    const itemMetadataMap = this._instanceProps.itemMetadataMap;
-    if (newSize > 0 && itemMetadataMap[index].size !== newSize) {
-      const currentItemData = itemMetadataMap[index];
-      const oldSize = itemMetadataMap[index].size;
-      const newEndOffset = currentItemData.offset + newSize;
-      itemMetadataMap[index] = {
-        offset: currentItemData.offset,
-        size: newSize
-      };
-      //fix next item overlap
-      if (itemMetadataMap[index + 1]) {
-        itemMetadataMap[index + 1].offset = newEndOffset;
-      }
+    const currentItemData = getItemMetadata(this.props, index, this._instanceProps);
+    if (newSize >= 0 && currentItemData.size !== newSize) {
+      const oldSize = currentItemData.size;
+      currentItemData.size = newSize;
+      //fix overlaps while anchored at index
+      const [overscanStart, overscanStop] = this._getRangeToRender(this.state.scrollOffset);
+      this.fixOverlaps(itemCount, index, overscanStop, fromEnd);
+      this.fixOverlaps(itemCount, overscanStart, index, !fromEnd);
       // update estimated total size
-      if (itemMetadataMap[index] && !itemMetadataMap[index].measured) {
-        itemMetadataMap[index].measured = true;
+      if (!currentItemData.measured) {
+        currentItemData.measured = true;
         this.measuredItemsCount += 1;
+        this.totalMeasuredSize = this.totalMeasuredSize + newSize;
+      } else {
+        this.totalMeasuredSize = this.totalMeasuredSize - oldSize + newSize;
       }
-      this.totalMeasuredSize = this.totalMeasuredSize - oldSize + newSize;
       // update estimated item size to average of measured elements
       const newItemSizeEstimate = Math.ceil(this.totalMeasuredSize / this.measuredItemsCount);
-      if (newItemSizeEstimate > 1) {
-        this._instanceProps.estimatedItemSize = newItemSizeEstimate;
-      }
+      this._instanceProps.estimatedItemSize = newItemSizeEstimate > 0 ? newItemSizeEstimate : 0;
       //forget styles
       this._getItemStyleCache(-1);
       this.requestUpdate();
     }
   }
 
-  getItemSize(index) {
-    const item = getItemMetadata(this.props, index, this._instanceProps);
-    const savedSize = item ? item.size : 0;
-    return savedSize ? savedSize : 50;
-  }
-
   // override so we can attach our custom getItemSize function
+  // and also adjust our wrapped offset
   _getItemStyle = (index) => {
     const { direction, itemSize, layout } = this.props;
 
@@ -314,7 +316,7 @@ export default class DynamicSizeList extends VariableSizeList {
       style = itemStyleCache[index];
     } else {
       const offset = getItemOffset(this.props, index, this._instanceProps);
-      const size = this.getItemSize(this.props, index, this._instanceProps);
+      const size = getItemSize(this.props, index, this._instanceProps);
 
       // TODO Deprecate direction "horizontal"
       const isHorizontal =
@@ -322,11 +324,13 @@ export default class DynamicSizeList extends VariableSizeList {
 
       const isRtl = direction === 'rtl';
       const offsetHorizontal = isHorizontal ? offset : 0;
+      const horizontalAdjustment = isHorizontal ? Math.abs(this.leastItemOffset) : 0;
+      const verticalAdjustment = !isHorizontal ? Math.abs(this.leastItemOffset) : 0;
       itemStyleCache[index] = style = {
         position: 'absolute',
-        left: isRtl ? undefined : offsetHorizontal,
-        right: isRtl ? offsetHorizontal : undefined,
-        top: !isHorizontal ? offset : 0,
+        left: isRtl ? undefined : offsetHorizontal + horizontalAdjustment,
+        right: isRtl ? offsetHorizontal + horizontalAdjustment : undefined,
+        top: !isHorizontal ? offset + verticalAdjustment : 0,
         height: !isHorizontal ? size : '100%',
         width: isHorizontal ? size : '100%',
       };
@@ -417,73 +421,128 @@ export default class DynamicSizeList extends VariableSizeList {
 
   fixOverlaps(
     itemCount,
-    itemMetadataMap,
     fromIndex,
-    endIndex
+    endIndex,
+    fromEnd
   ) {
     let fixed = false;
-
-    // skip fixing if already doing it
-    if (this.fixingInProgress) return fixed;
-    else this.fixingInProgress = true;
-
-    for (let i = fromIndex; i < endIndex + 1; i++) {
-      if (i === fromIndex) continue;
-      if (i < 0) continue;
-      if (i >= itemCount) break;
-      const currentItemData = itemMetadataMap[i];
-      if (!currentItemData) continue;
-      const prevItemData = itemMetadataMap[i - 1];
-      if (!prevItemData) continue;
-      const currentOffset = currentItemData.offset;
-      const prevItemEndOffset = prevItemData.offset + prevItemData.size;
-      if (prevItemEndOffset !== currentOffset) {
-        // move to end of prev item
-        fixed = true;
-        currentItemData.offset = prevItemEndOffset;
+    if (!fromEnd) {
+      for (let i = fromIndex; i < endIndex + 1; i++) {
+        if (i === fromIndex) continue;
+        if (i < 0) continue;
+        if (i >= itemCount) break;
+        const currentItemData = getItemMetadata(this.props, i, this._instanceProps);
+        const prevItemData = getItemMetadata(this.props, i - 1, this._instanceProps);
+        const currentOffset = currentItemData.offset;
+        const prevItemEndOffset = prevItemData.offset + prevItemData.size;
+        if (prevItemEndOffset !== currentOffset) {
+          // move to end of prev item
+          fixed = true;
+          currentItemData.offset = prevItemEndOffset;
+        }
+      }
+    } else {
+      for (let i = endIndex; i >= fromIndex; i--) {
+        if (i === endIndex) continue;
+        if (i < 0) break;
+        if (i >= itemCount) continue;
+        const currentItemData = getItemMetadata(this.props, i, this._instanceProps);
+        const nextItemData = getItemMetadata(this.props, i + 1, this._instanceProps);
+        const calculatedOffset = nextItemData.offset - currentItemData.size;
+        if (currentItemData.offset !== calculatedOffset) {
+          // move to end of prev item
+          fixed = true;
+          currentItemData.offset = calculatedOffset;
+          // update least offset since this operation is likely to push some elements below 0
+          if (currentItemData.offset < this.leastItemOffset) {
+            this.leastItemOffset = currentItemData.offset;
+          }
+        }
       }
     }
-
-    this.fixingInProgress = false;
     return fixed;
   }
 
   _applyFixes(scrollOffset, state, props, instanceProps) {
-    const itemMetadataMap = instanceProps.itemMetadataMap;
     const { scrollDirection } = state;
     const { itemCount } = props;
-    const [startIndex, stopIndex, visibleStartIndex, visibleStopIndex] = this._getRangeToRender(scrollOffset);
-    let offsetChange = 0;
+    const [startIndex, stopIndex, visibleStartIndex, visibleStopIndex, usedEstimate] = this._getRangeToRender(scrollOffset);
     let fixed = false;
     // fix overlaps 
     const fromEnd = scrollDirection === "backward";
-    // from from visible to overscan depending on direction of scroll
+    // from visible to overscan depending on direction of scroll
     const fixStartIndex = fromEnd ? startIndex : visibleStartIndex;
     const fixStopIndex = fromEnd ? visibleStopIndex : stopIndex;
 
     const anchorIndex = fromEnd ? visibleStopIndex : visibleStartIndex;
-    const oldOffset = itemMetadataMap[anchorIndex].offset;
+    const oldOffset = getItemOffset(this.props, anchorIndex, this._instanceProps);
     let newOffset = oldOffset;
     fixed = this.fixOverlaps(
       itemCount,
-      itemMetadataMap,
       fixStartIndex,
       fixStopIndex,
+      fromEnd,
     );
+    newOffset = getItemOffset(this.props, anchorIndex, this._instanceProps);
+
+    // give overscanStart items offsets
+    for (let i = visibleStartIndex - 1; i >= startIndex; i--) {
+      const currentItem = getItemMetadata(this.props, i, this._instanceProps);
+      const nextItem = getItemMetadata(this.props, i + 1, this._instanceProps);
+      currentItem.offset = nextItem.offset - currentItem.size;
+    }
+    // give overscanStop items offsets
+    for (let i = visibleStopIndex + 1; i <= stopIndex; i++) {
+      const currentItem = getItemMetadata(this.props, i, this._instanceProps);
+      const prevItem = getItemMetadata(this.props, i - 1, this._instanceProps);
+      currentItem.offset = prevItem.offset + prevItem.size;
+    }
+    const offsetChange = newOffset - oldOffset;
+    if (offsetChange !== 0) {
+      // anchor offset changed
+      fixed = true;
+    }
     if (fixed) {
       // forget styles
       this._getItemStyleCache(-1);
-      // adjust position if changed to keep visible item in view
-      newOffset = itemMetadataMap[anchorIndex].offset;
-      offsetChange = newOffset - oldOffset;
     }
-    return { newAnchorOffset: newOffset, anchorIndex, fixStartIndex, fixStopIndex, offsetChange, fixed };
+    return { newAnchorOffset: newOffset, anchorIndex, fixStartIndex, fixStopIndex, offsetChange, fixed, usedEstimate };
+  }
+
+  _onScrollVertical = (event) => {
+    const { clientHeight, scrollHeight, scrollTop } = event.currentTarget;
+    this.setState((prevState, prevProps) => {
+      if (prevState.scrollOffset === scrollTop) {
+        // Scroll position may have been updated by cDM/cDU,
+        // In which case we don't need to trigger another render,
+        // And we don't want to update state.isScrolling.
+        return null;
+      }
+
+      // Prevent Safari's elastic scrolling from causing visual shaking when scrolling past bounds.
+      const scrollOffset = Math.max(
+        0,
+        Math.min(scrollTop, scrollHeight - clientHeight)
+      );
+
+      const { offsetChange, fixed, usedEstimate } = this._applyFixes(scrollOffset, prevState, prevProps, this._instanceProps);
+      if (fixed || offsetChange !== 0 || usedEstimate) {
+        // forget styles
+        this._getItemStyleCache(-1);
+      }
+      return {
+        isScrolling: true,
+        scrollDirection:
+          prevState.scrollOffset < scrollOffset ? 'forward' : 'backward',
+        // Force update if fixed but no offset change
+        scrollOffset: scrollOffset + offsetChange + (fixed || usedEstimate ? 0.1 : 0),
+        scrollUpdateWasRequested: false,
+      };
+    }, this._resetIsScrollingDebounced);
   }
 
   _onScrollHorizontal = (event) => {
     const { clientWidth, scrollLeft, scrollWidth } = event.currentTarget;
-    this.scrollSize = scrollWidth;
-    const { width } = this.props;
     this.setState((prevState, prevProps) => {
       if (prevState.scrollOffset === scrollLeft) {
         // Scroll position may have been updated by cDM/cDU,
@@ -516,59 +575,19 @@ export default class DynamicSizeList extends VariableSizeList {
         Math.min(scrollOffset, scrollWidth - clientWidth)
       );
 
-      const { newAnchorOffset, offsetChange, fixed } = this._applyFixes(scrollOffset, prevState, prevProps, this._instanceProps);
-      if (this._outerRef) {
-        if (
-        (newAnchorOffset > this._outerRef.scrollLeft + width)) {
-          this._outerRef.scrollLeft = newAnchorOffset;
-        }
+      const { offsetChange, fixed, usedEstimate } = this._applyFixes(scrollOffset, prevState, prevProps, this._instanceProps);
+      if (fixed || offsetChange !== 0 || usedEstimate) {
+        // forget styles
+        this._getItemStyleCache(-1);
       }
-
       return {
         isScrolling: true,
         scrollDirection:
           prevState.scrollOffset < scrollLeft ? 'forward' : 'backward',
         // Force update if fixed but no offset change
-        scrollOffset: scrollOffset + offsetChange + (fixed ? 0.1 : 0),
+        scrollOffset: scrollOffset + offsetChange + (fixed || usedEstimate ? 0.1 : 0),
         scrollUpdateWasRequested: false,
       };
     }, this._resetIsScrollingDebounced);
   };
-
-  _onScrollVertical = (event) => {
-    const { clientHeight, scrollHeight, scrollTop } = event.currentTarget;
-    this.scrollSize = scrollHeight;
-    const { height } = this.props;
-    this.setState((prevState, prevProps) => {
-      if (prevState.scrollOffset === scrollTop) {
-        // Scroll position may have been updated by cDM/cDU,
-        // In which case we don't need to trigger another render,
-        // And we don't want to update state.isScrolling.
-        return null;
-      }
-
-      // Prevent Safari's elastic scrolling from causing visual shaking when scrolling past bounds.
-      const scrollOffset = Math.max(
-        0,
-        Math.min(scrollTop, scrollHeight - clientHeight)
-      );
-
-      const { newAnchorOffset, offsetChange, fixed } = this._applyFixes(scrollOffset, prevState, prevProps, this._instanceProps);
-      if (this._outerRef) {
-        if (
-        (newAnchorOffset > this._outerRef.scrollTop + height)) {
-          this._outerRef.scrollTop = newAnchorOffset;
-        }
-      }
-
-      return {
-        isScrolling: true,
-        scrollDirection:
-          prevState.scrollOffset < scrollOffset ? 'forward' : 'backward',
-        // Force update if fixed but no offset change
-        scrollOffset: scrollOffset + offsetChange + (fixed ? 0.1 : 0),
-        scrollUpdateWasRequested: false,
-      };
-    }, this._resetIsScrollingDebounced);
-  }
 }
