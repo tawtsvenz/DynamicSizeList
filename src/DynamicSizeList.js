@@ -223,7 +223,7 @@ export default class DynamicSizeList extends VariableSizeList {
 
     const { isScrolling, scrollOffset } = this.state;
     const { itemCount, scrollFromEnd } = this.props;
-    const [visibleStopIndex] = this._getRangeToRender(scrollOffset);
+    const [_, __, ___, visibleStopIndex] = this._getRangeToRender(scrollOffset);
     const visibleStopOffset = getItemOffset(this.props, visibleStopIndex, this._instanceProps);
     // scroll to end on first items population if props say we should start from end
     if (
