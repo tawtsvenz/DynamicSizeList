@@ -1,6 +1,7 @@
 import React, { createElement } from "react";
 import memoizeOne from 'memoize-one';
 
+import { getRTLOffsetType } from "./domHelpers";
 import { VariableSizeList } from "react-window";
 
 // override since not exposed in api
