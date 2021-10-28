@@ -563,6 +563,9 @@ export default class DynamicSizeList extends VariableSizeList {
           case 'positive-descending':
             scrollOffset = scrollWidth - clientWidth - scrollLeft;
             break;
+          default:
+            scrollOffset = scrollLeft;
+            break;
         }
       }
 
