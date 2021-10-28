@@ -27,7 +27,7 @@ function createStyles(count, changeWidth) {
 export default function SentenceList(props) {
   const [size, setSize] = useState(null);
   const [vertical] = useState(true);
-  const [scrollFromEnd] = useState(true);
+  const [scrollFromEnd] = useState(false);
   const parentRef = useRef();
   useEffect(() => {
     if (parentRef.current) {
