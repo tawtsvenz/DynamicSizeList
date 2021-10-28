@@ -27,6 +27,7 @@ function createStyles(count, changeWidth) {
 export default function SentenceList(props) {
   const [size, setSize] = useState(null);
   const [vertical] = useState(true);
+  const [scrollFromEnd] = useState(true);
   const parentRef = useRef();
   useEffect(() => {
     if (parentRef.current) {
@@ -56,6 +57,7 @@ export default function SentenceList(props) {
         itemSize={() => 10} // dummy. Will not be used
         overscanCount={5}
         direction={vertical ? 'vertical' : 'horizontal'}
+        scrollFromEnd={scrollFromEnd}
       >
         {(index, ref) => {
           return (

@@ -239,7 +239,7 @@ export default class DynamicSizeList extends VariableSizeList {
     super.componentDidUpdate();
 
     const { isScrolling } = this.state;
-    const { itemCount, scrollFromEnd } = this.props;
+    const { itemCount, scrollFromEnd, direction, layout, width, height } = this.props;
     // scroll to end on first items population if props say we should start from end
     if (
       !this.firstScrollDone &&
@@ -248,7 +248,9 @@ export default class DynamicSizeList extends VariableSizeList {
       scrollFromEnd
     ) {
       if (!isScrolling) {
-        this.scrollTo(this.getEstimatedTotalSize());
+        const isHorizontal = direction === "horizontal" || layout === "horizontal";
+        const windowSize = isHorizontal ? width : height;
+        this.scrollTo(this.getEstimatedTotalSize() - windowSize);
         this.firstScrollDone = true;
       }
     }
