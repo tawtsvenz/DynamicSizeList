@@ -40,13 +40,7 @@ const getItemSize = (
   props,
   index,
   instanceProps
-) => {
-  const { estimatedItemSize } = instanceProps;
-  const item = getItemMetadata(props, index, instanceProps);
-  const savedSize = item ? item.size : -1;
-  return savedSize >= 0 ? savedSize : estimatedItemSize;
-
-}
+) => getItemMetadata(props, index, instanceProps).size;
 
 const getStopIndexForStartIndex = (
   props,
